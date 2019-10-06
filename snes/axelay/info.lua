@@ -20,6 +20,8 @@ previous_buttons = joypad.get(1);
 boss_appear_frame = nil;
 statistics = {};
 save_state_to_boss_appear_frame = {};
+previous_lag_frame_count = 0;
+load_lag_frame_count = 0;
 
 last_memory_write_frame = 0;
 backtrace = {{}, {}};
@@ -58,7 +60,7 @@ function main()
 end
 
 function every_frame()
-	
+
 	if message_display_counter > 0 then
 		gui.drawString(message_x_position, 0, message);
 		message_display_counter = message_display_counter - 1;
@@ -93,7 +95,11 @@ function on_save_state(state_name)
 end
 
 function on_load_state(state_name)
-	write_message('Loaded state', 30);
+	-- emu.lagcount gets reset when a state is loaded, so we just save
+	-- the lagcount every frame to previous_lag_frame_count
+	local lag_frame_count = previous_lag_frame_count - emu.lagcount();
+	write_message(string.format('Lag frames since last: %d', lag_frame_count), 60);
+	load_lag_frame_count = emu.lagcount();
 	previous_stage = mainmemory.read_u8(0x1E62);
 	local boss_id = get_boss_id();
 	if (
@@ -104,7 +110,6 @@ function on_load_state(state_name)
 		and statistics[difficulty][stage][boss_id][state_name] ~= nil
 	) then
 		boss_appear_frame = statistics[difficulty][stage][boss_id][state_name];
-		console.log(string.format('Set boss appear frame to %d', boss_appear_frame));
 	else
 		boss_appear_frame = nil;
 	end
@@ -123,6 +128,7 @@ end
 function indicate_lag()
 	-- Draw a square over Axelay if the game is lagging
 	if emu.islagged() then
+		previous_lag_frame_count = emu.lagcount();
 		axelay_x = mainmemory.read_u8(0x9B);
 		axelay_y = mainmemory.read_u8(0x9D);
 		-- This calculation doesn't quite work on vertical scrolling stages,
@@ -186,6 +192,7 @@ function show_boss_health()
 	end
 
 	local hp_address = nil;
+	local iframes_address = nil;
 	local two_bytes = false;
 	local enemy_id = get_boss_id();
 	local hp = 0;
@@ -195,10 +202,13 @@ function show_boss_health()
 
 	if stage == 0 then
 		hp_address = 0x15BC;
+		iframes_address = 0x15BD;
 	elseif stage == 1 then
 		hp_address = 0x1634;
+		iframes_address = 0x1635;
 	elseif stage == 2 then
 		hp_address = 0x15BC;
+		iframes_address = 0x15BD;
 	elseif stage == 3 then
 		hp_address = 0x60C;
 		two_bytes = true;
@@ -212,6 +222,7 @@ function show_boss_health()
 		end
 		if enemy_id == 0xBA then
 			hp_address = 0x15BC;
+			iframes_address = 0x15BD;
 		end
 	end
 
@@ -251,9 +262,17 @@ function show_boss_health()
 				if boss_appear_frame ~= nil then
 					alive_frames = emu.framecount() - boss_appear_frame;
 				end
-				write_message(string.format('%d HP %.1f s', hp, alive_frames / 60), 1, 80);
+				local message = string.format('%d HP %.1fs', hp, alive_frames / 60);
+				if iframes_address ~= nil then
+					message = string.format('%s %d if', message, mainmemory.read_u8(iframes_address));
+				end
+				if stage == 5 then
+					-- For stage 5, also show the eye crystal health
+					message = string.format('%s %d %d', message, mainmemory.read_u8(0x1604), mainmemory.read_u8(0x161c));
+				end
+				write_message(message, 1, 70)
 			end
-			if boss_appear_frame == nil then
+			if boss_appear_frame == nil and enemy_id ~= 0xBA then
 				boss_appear_frame = emu.framecount();
 				local best_kill_frames = get_best_kill_frames(enemy_id);
 				write_message(string.format('Best time: %.2f', best_kill_frames / 60), 120, 70);
@@ -274,7 +293,7 @@ function show_boss_health()
 				end;
 				write_message(
 					string.format(
-						'Killed in %.2f s (%s%.2f s)',
+						'Killed in %.2fs (%s%.2fs)',
 						kill_frames / 60,
 						sign,
 						(kill_frames - best_kill_frames) / 60),
@@ -379,10 +398,10 @@ function cheat()
 				'crash',  -- Homing Missile
 				'Cluster Bombs',
 				'Morning Star',
-				'Needle Cracker'
+				'Needle Cracker',
 			};
 			local weapon_list = {
-				[2]=11, [11]=5, [5]=2,  -- Pod
+				[2]=11, [11]=5, [5]=2, -- Pod
 				[3]=10, [10]=3,  -- Side
 				[7]=6, [6]=9, [9]=7  -- Bay
 			};
@@ -399,7 +418,7 @@ function cheat()
 
 			local new_weapon = -1;
 			local current_weapon = mainmemory.read_u8(weapon_memory);
-			if current_weapon == 1 or current_weapon == 4 or current_weapon > 11 then  -- Disabled
+			if current_weapon > 11 then  -- Disabled
 				if weapon_memory == 0x330 then
 					new_weapon = 2;
 				elseif weapon_memory == 0x332 then
@@ -418,8 +437,11 @@ function cheat()
 			mainmemory.write_u8(weapon_memory, new_weapon);
 			-- The screen won't update until we unpause, so just print out a
 			-- message so the user isn't confused
-			--write_message(weapon_description[new_weapon], 30);
-			write_message(weapon_description[new_weapon], 30);
+			if weapon_description[new_weapon] ~= nil then
+				write_message(weapon_description[new_weapon], 30);
+			else
+				write_message(string.format('%d', new_weapon), 30);
+			end
 		end
 	end
 
@@ -489,7 +511,7 @@ end
 
 function get_formatted_statistics(stats)
 	local result = '{\n';
-	for difficulty, levels in pairs(stats) do	
+	for difficulty, levels in pairs(stats) do
 		result = result .. " [\"" .. difficulty .. "\"]={\n" ..
 			get_formatted_levels(levels) .. ' },\n';
 	end
@@ -559,7 +581,7 @@ function on_memory_write()
 	elseif opcode == 'asl' then
 		new_value = mainmemory.read_u8(0x15C7) * 2;
 	end
-	
+
 	if emu.framecount() - last_memory_write_frame > 10 then
 		console.log('');
 	end
