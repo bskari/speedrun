@@ -475,46 +475,21 @@ function check_sprite_visibility(ppu)
     end
 end
 
--- ── Verification logging ──────────────────────────────────────────────────────
-
-local last_log_frame = -300
-
-local function log_ppu_state(ppu)
-    console.log(string.format(
-        "[frame %d] bg_mode=%d  sprite_base=0x%04X size_sel=%d",
-        emu.framecount(), ppu.bg_mode, ppu.sprite_base, ppu.sprite_size_sel))
-    console.log(string.format(
-        "  BG1: tile=0x%04X  map=0x%04X (%dx%d)  large=%d  scroll=(%d,%d)",
-        ppu.bg1_tile_base, ppu.bg1_map_base, ppu.bg1_map_w, ppu.bg1_map_h,
-        ppu.bg1_large_tiles, ppu.bg1_hscroll, ppu.bg1_vscroll))
-    console.log(string.format(
-        "  BG2: tile=0x%04X  map=0x%04X (%dx%d)  large=%d  scroll=(%d,%d)",
-        ppu.bg2_tile_base, ppu.bg2_map_base, ppu.bg2_map_w, ppu.bg2_map_h,
-        ppu.bg2_large_tiles, ppu.bg2_hscroll, ppu.bg2_vscroll))
-    console.log(string.format(
-        "  BG3: tile=0x%04X  map=0x%04X (%dx%d)  large=%d",
-        ppu.bg3_tile_base, ppu.bg3_map_base, ppu.bg3_map_w, ppu.bg3_map_h,
-        ppu.bg3_large_tiles))
-    console.log(string.format(
-        "  BG4: tile=0x%04X  map=0x%04X (%dx%d)  large=%d",
-        ppu.bg4_tile_base, ppu.bg4_map_base, ppu.bg4_map_w, ppu.bg4_map_h,
-        ppu.bg4_large_tiles))
-
-    local regions = get_tilemap_regions(ppu)
-    for i, r in ipairs(regions) do
-        console.log(string.format(
-            "  tilemap region %d: 0x%04X-0x%04X (%d bytes)",
-            i, r.base, r.base + r.len - 1, r.len))
-    end
-end
-
--- ── Main loop ─────────────────────────────────────────────────────────────────
+-- ── Step 12: draw_hud ────────────────────────────────────────────────────────
 
 local function count_table(t)
     local n = 0
     for _ in pairs(t) do n = n + 1 end
     return n
 end
+
+function draw_hud()
+    gui.drawString(0, 0, string.format(
+        'Unconfirmed: %d  Saved: %d',
+        count_table(unconfirmed_tiles), save_counter))
+end
+
+-- ── Step 13: main loop ────────────────────────────────────────────────────────
 
 init()
 
@@ -531,18 +506,6 @@ while true do
         prev_vram = curr_vram
     end
 
-    -- Log PPU layout every 5 seconds for verification
-    if emu.framecount() - last_log_frame >= 300 then
-        last_log_frame = emu.framecount()
-        if ppu.bg_mode ~= 7 then
-            log_ppu_state(ppu)
-        else
-            console.log(string.format("[frame %d] Mode 7 — skipping", emu.framecount()))
-        end
-    end
-
-    gui.drawString(0, 0, string.format(
-        "unconfirmed=%d  saved=%d", count_table(unconfirmed_tiles), save_counter))
-
+    draw_hud()
     emu.frameadvance()
 end
