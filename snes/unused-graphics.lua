@@ -159,7 +159,104 @@ function mark_confirmed(vram_offset)
     confirmed_tiles[vram_offset]   = true
 end
 
--- ── Step 9 stub: save_unconfirmed_tile ────────────────────────────────────────
+-- ── Step 10: decode_tile ─────────────────────────────────────────────────────
+-- Returns a 1-indexed array of 64 palette indices (8 rows × 8 cols, row-major).
+-- data is 0-indexed (as stored in entry.data); bpp is 2, 4, or 8.
+
+function decode_tile(data, bpp)
+    local pixels = {}
+    -- Bitplane pairs: 2bpp has 1 pair, 4bpp has 2, 8bpp has 4.
+    -- Each pair is 16 bytes (8 rows × 2 bytes). Pairs are at offsets 0, 16, 32, 48.
+    for row = 0, 7 do
+        for col = 0, 7 do
+            local bit_pos = 7 - col  -- MSB = leftmost pixel
+            local index   = 0
+
+            local num_pairs = bpp / 2
+            for pair = 0, num_pairs - 1 do
+                local pair_base = pair * 16 + row * 2
+                local bp_lo = data[pair_base + 0] or 0
+                local bp_hi = data[pair_base + 1] or 0
+                local b0 = bit.band(bit.rshift(bp_lo, bit_pos), 1)
+                local b1 = bit.band(bit.rshift(bp_hi, bit_pos), 1)
+                index = index + bit.lshift(b0, pair * 2) + bit.lshift(b1, pair * 2 + 1)
+            end
+
+            pixels[row * 8 + col + 1] = index  -- 1-indexed output
+        end
+    end
+    return pixels
+end
+
+-- ── Step 11: write_bmp ───────────────────────────────────────────────────────
+-- Writes an 8×8, 8bpp indexed BMP.
+-- pixels: 1-indexed array of 64 palette indices.
+-- cgram:  0-indexed 512-byte CGRAM array (256 × 15-bit BGR words, little-endian).
+
+function write_bmp(pixels, cgram, filename)
+    local function le32(n)
+        return string.char(
+            bit.band(n,                0xFF),
+            bit.band(bit.rshift(n,  8), 0xFF),
+            bit.band(bit.rshift(n, 16), 0xFF),
+            bit.band(bit.rshift(n, 24), 0xFF))
+    end
+    local function le16(n)
+        return string.char(
+            bit.band(n,               0xFF),
+            bit.band(bit.rshift(n, 8), 0xFF))
+    end
+
+    local pixel_offset = 14 + 40 + 256 * 4  -- 1078
+    local file_size    = pixel_offset + 64   -- 1142
+
+    local f = io.open(filename, 'wb')
+    if f == nil then
+        console.log("write_bmp: could not open " .. filename)
+        return
+    end
+
+    -- File header (14 bytes)
+    f:write('BM')
+    f:write(le32(file_size))
+    f:write(le16(0))          -- reserved
+    f:write(le16(0))          -- reserved
+    f:write(le32(pixel_offset))
+
+    -- DIB header (40 bytes)
+    f:write(le32(40))         -- header size
+    f:write(le32(8))          -- width
+    f:write(le32(-8))         -- height: negative = top-down
+    f:write(le16(1))          -- color planes
+    f:write(le16(8))          -- bits per pixel
+    f:write(le32(0))          -- compression: none
+    f:write(le32(64))         -- image data size
+    f:write(le32(2835))       -- X pixels/meter (~72 DPI)
+    f:write(le32(2835))       -- Y pixels/meter
+    f:write(le32(256))        -- colors in table
+    f:write(le32(0))          -- important colors
+
+    -- Color table (256 × 4 bytes, BGRA)
+    for i = 0, 255 do
+        local lo   = cgram[i * 2]     or 0
+        local hi   = cgram[i * 2 + 1] or 0
+        local word = lo + hi * 256
+        -- SNES 15-bit: bits 4-0=R, 9-5=G, 14-10=B; expand 5-bit to 8-bit with << 3
+        local r = bit.lshift(bit.band(word,                0x1F), 3)
+        local g = bit.lshift(bit.band(bit.rshift(word,  5), 0x1F), 3)
+        local b = bit.lshift(bit.band(bit.rshift(word, 10), 0x1F), 3)
+        f:write(string.char(b, g, r, 0))  -- BGRA
+    end
+
+    -- Pixel data (64 bytes, 8 rows × 8 cols)
+    for i = 1, 64 do
+        f:write(string.char(pixels[i] or 0))
+    end
+
+    f:close()
+end
+
+-- ── Step 9: save_unconfirmed_tile ────────────────────────────────────────────
 
 function save_unconfirmed_tile(vram_offset)
     local entry = unconfirmed_tiles[vram_offset]
@@ -167,9 +264,18 @@ function save_unconfirmed_tile(vram_offset)
         unconfirmed_tiles[vram_offset] = nil
         return
     end
+
+    local pixels = decode_tile(entry.data, entry.bpp)
+
+    memory.usememorydomain("CGRAM")
+    local cgram = memory.read_bytes_as_array(0, 512)
+    memory.usememorydomain("VRAM")
+
+    local filename = string.format('unused_%04d_f%06d.bmp', save_counter, entry.frame)
+    write_bmp(pixels, cgram, filename)
     console.log(string.format(
-        "  [save stub] tile 0x%04X  bpp=%d  loaded_frame=%d",
-        vram_offset, entry.bpp, entry.frame))
+        "saved %s  (tile 0x%04X, bpp=%d)", filename, vram_offset, entry.bpp))
+
     unconfirmed_tiles[vram_offset] = nil
     save_counter = save_counter + 1
 end
